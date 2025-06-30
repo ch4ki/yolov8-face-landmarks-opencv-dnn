@@ -4,9 +4,10 @@ import cv2
 import numpy as np
 from collections import defaultdict, OrderedDict
 from typing import Any, List, Optional, Tuple
+
 import scipy
 import scipy.linalg
-from .detection import YOLOv8Face
+from detection import YOLOv8Face
 
 # Try to import optional dependencies
 try:

@@ -1,0 +1,38 @@
+# YOLOv8 Face Detection and Tracking Configuration
+
+# Detection settings
+detection:
+  model_path: "weights/yolov8n-face.onnx"
+  conf_threshold: 0.2
+  iou_threshold: 0.5
+  input_size: [640, 640]
+
+# Tracking settings
+tracking:
+  track_threshold: 0.5
+  track_buffer: 30
+  match_threshold: 0.8
+  frame_rate: 30
+  max_history_length: 30
+
+# Quality assessment settings
+quality:
+  model_path: "weights/face-quality-assessment.onnx"
+  min_quality_threshold: 0.5
+  input_size: [112, 112]
+
+# Face alignment settings
+alignment:
+  template_mode: "arcface"  # "arcface" or "default"
+  template_scale: null      # Optional: 0.8-1.2
+  output_size: 112
+  allow_upscale: false
+
+# Directory paths
+weights_dir: "weights"
+images_dir: "images"
+output_dir: "output"
+
+# Logging settings
+log_level: "INFO"
+log_file: null  # Optional: "logs/app.log"

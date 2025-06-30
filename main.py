@@ -1,181 +1,233 @@
-import cv2
-import numpy as np
-import math
+#!/usr/bin/env python3
+"""
+Main entry point for YOLOv8 Face Detection and Tracking.
+Provides a unified interface for all functionality.
+"""
+
 import argparse
+import sys
+from pathlib import Path
 
-class YOLOv8_face:
-    def __init__(self, path, conf_thres=0.2, iou_thres=0.5):
-        self.conf_threshold = conf_thres
-        self.iou_threshold = iou_thres
-        self.class_names = ['face']
-        self.num_classes = len(self.class_names)
-        # Initialize model
-        self.net = cv2.dnn.readNet(path)
-        self.input_height = 640
-        self.input_width = 640
-        self.reg_max = 16
+# Add src to path
+sys.path.insert(0, str(Path(__file__).parent / "src"))
 
-        self.project = np.arange(self.reg_max)
-        self.strides = (8, 16, 32)
-        self.feats_hw = [(math.ceil(self.input_height / self.strides[i]), math.ceil(self.input_width / self.strides[i])) for i in range(len(self.strides))]
-        self.anchors = self.make_anchors(self.feats_hw)
+from config import get_default_config, load_config_from_file
+from utils import setup_logging
 
-    def make_anchors(self, feats_hw, grid_cell_offset=0.5):
-        """Generate anchors from features."""
-        anchor_points = {}
-        for i, stride in enumerate(self.strides):
-            h,w = feats_hw[i]
-            x = np.arange(0, w) + grid_cell_offset  # shift x
-            y = np.arange(0, h) + grid_cell_offset  # shift y
-            sx, sy = np.meshgrid(x, y)
-            # sy, sx = np.meshgrid(y, x)
-            anchor_points[stride] = np.stack((sx, sy), axis=-1).reshape(-1, 2)
-        return anchor_points
 
-    def softmax(self, x, axis=1):
-        x_exp = np.exp(x)
-        # 如果是列向量，则axis=0
-        x_sum = np.sum(x_exp, axis=axis, keepdims=True)
-        s = x_exp / x_sum
-        return s
+def main():
+    parser = argparse.ArgumentParser(
+        description="YOLOv8 Face Detection and Tracking",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  # Detect faces in image
+  python main.py detect --image images/test.jpg
+  
+  # Track faces in video
+  python main.py track --input video.mp4 --output tracked_video.mp4
+  
+  # Assess face quality
+  python main.py quality --input images/ --top-k 10
+  
+  # Align faces
+  python main.py align --input images/ --output-dir output/aligned
+  
+  # Run with custom config
+  python main.py detect --image test.jpg --config config.yaml
+        """
+    )
     
-    def resize_image(self, srcimg, keep_ratio=True):
-        top, left, newh, neww = 0, 0, self.input_width, self.input_height
-        if keep_ratio and srcimg.shape[0] != srcimg.shape[1]:
-            hw_scale = srcimg.shape[0] / srcimg.shape[1]
-            if hw_scale > 1:
-                newh, neww = self.input_height, int(self.input_width / hw_scale)
-                img = cv2.resize(srcimg, (neww, newh), interpolation=cv2.INTER_AREA)
-                left = int((self.input_width - neww) * 0.5)
-                img = cv2.copyMakeBorder(img, 0, 0, left, self.input_width - neww - left, cv2.BORDER_CONSTANT,
-                                         value=(0, 0, 0))  # add border
-            else:
-                newh, neww = int(self.input_height * hw_scale), self.input_width
-                img = cv2.resize(srcimg, (neww, newh), interpolation=cv2.INTER_AREA)
-                top = int((self.input_height - newh) * 0.5)
-                img = cv2.copyMakeBorder(img, top, self.input_height - newh - top, 0, 0, cv2.BORDER_CONSTANT,
-                                         value=(0, 0, 0))
-        else:
-            img = cv2.resize(srcimg, (self.input_width, self.input_height), interpolation=cv2.INTER_AREA)
-        return img, newh, neww, top, left
-
-    def detect(self, srcimg):
-        input_img, newh, neww, padh, padw = self.resize_image(cv2.cvtColor(srcimg, cv2.COLOR_BGR2RGB))
-        scale_h, scale_w = srcimg.shape[0]/newh, srcimg.shape[1]/neww
-        input_img = input_img.astype(np.float32) / 255.0
-
-        blob = cv2.dnn.blobFromImage(input_img)
-        self.net.setInput(blob)
-        outputs = self.net.forward(self.net.getUnconnectedOutLayersNames())
-        # if isinstance(outputs, tuple):
-        #     outputs = list(outputs)
-        # if float(cv2.__version__[:3])>=4.7:
-        #     outputs = [outputs[2], outputs[0], outputs[1]] ###opencv4.7需要这一步，opencv4.5不需要
-        # Perform inference on the image
-        det_bboxes, det_conf, det_classid, landmarks = self.post_process(outputs, scale_h, scale_w, padh, padw)
-        return det_bboxes, det_conf, det_classid, landmarks
-
-    def post_process(self, preds, scale_h, scale_w, padh, padw):
-        bboxes, scores, landmarks = [], [], []
-        for i, pred in enumerate(preds):
-            stride = int(self.input_height/pred.shape[2])
-            pred = pred.transpose((0, 2, 3, 1))
-            
-            box = pred[..., :self.reg_max * 4]
-            cls = 1 / (1 + np.exp(-pred[..., self.reg_max * 4:-15])).reshape((-1,1))
-            kpts = pred[..., -15:].reshape((-1,15)) ### x1,y1,score1, ..., x5,y5,score5
-
-            # tmp = box.reshape(self.feats_hw[i][0], self.feats_hw[i][1], 4, self.reg_max)
-            tmp = box.reshape(-1, 4, self.reg_max)
-            bbox_pred = self.softmax(tmp, axis=-1)
-            bbox_pred = np.dot(bbox_pred, self.project).reshape((-1,4))
-
-            bbox = self.distance2bbox(self.anchors[stride], bbox_pred, max_shape=(self.input_height, self.input_width)) * stride
-            kpts[:, 0::3] = (kpts[:, 0::3] * 2.0 + (self.anchors[stride][:, 0].reshape((-1,1)) - 0.5)) * stride
-            kpts[:, 1::3] = (kpts[:, 1::3] * 2.0 + (self.anchors[stride][:, 1].reshape((-1,1)) - 0.5)) * stride
-            kpts[:, 2::3] = 1 / (1+np.exp(-kpts[:, 2::3]))
-
-            bbox -= np.array([[padw, padh, padw, padh]])  ###合理使用广播法则
-            bbox *= np.array([[scale_w, scale_h, scale_w, scale_h]])
-            kpts -= np.tile(np.array([padw, padh, 0]), 5).reshape((1,15))
-            kpts *= np.tile(np.array([scale_w, scale_h, 1]), 5).reshape((1,15))
-
-            bboxes.append(bbox)
-            scores.append(cls)
-            landmarks.append(kpts)
-
-        bboxes = np.concatenate(bboxes, axis=0)
-        scores = np.concatenate(scores, axis=0)
-        landmarks = np.concatenate(landmarks, axis=0)
+    parser.add_argument("--config", type=str, help="Configuration file path")
+    parser.add_argument("--log-level", type=str, default="INFO", 
+                       choices=["DEBUG", "INFO", "WARNING", "ERROR"],
+                       help="Logging level")
     
-        bboxes_wh = bboxes.copy()
-        bboxes_wh[:, 2:4] = bboxes[:, 2:4] - bboxes[:, 0:2]  ####xywh
-        classIds = np.argmax(scores, axis=1)
-        confidences = np.max(scores, axis=1)  ####max_class_confidence
-        
-        mask = confidences>self.conf_threshold
-        bboxes_wh = bboxes_wh[mask]  ###合理使用广播法则
-        confidences = confidences[mask]
-        classIds = classIds[mask]
-        landmarks = landmarks[mask]
-        
-        indices = cv2.dnn.NMSBoxes(bboxes_wh.tolist(), confidences.tolist(), self.conf_threshold,
-                                   self.iou_threshold).flatten()
-        if len(indices) > 0:
-            mlvl_bboxes = bboxes_wh[indices]
-            confidences = confidences[indices]
-            classIds = classIds[indices]
-            landmarks = landmarks[indices]
-            return mlvl_bboxes, confidences, classIds, landmarks
-        else:
-            print('nothing detect')
-            return np.array([]), np.array([]), np.array([]), np.array([])
-
-    def distance2bbox(self, points, distance, max_shape=None):
-        x1 = points[:, 0] - distance[:, 0]
-        y1 = points[:, 1] - distance[:, 1]
-        x2 = points[:, 0] + distance[:, 2]
-        y2 = points[:, 1] + distance[:, 3]
-        if max_shape is not None:
-            x1 = np.clip(x1, 0, max_shape[1])
-            y1 = np.clip(y1, 0, max_shape[0])
-            x2 = np.clip(x2, 0, max_shape[1])
-            y2 = np.clip(y2, 0, max_shape[0])
-        return np.stack([x1, y1, x2, y2], axis=-1)
+    subparsers = parser.add_subparsers(dest="command", help="Available commands")
     
-    def draw_detections(self, image, boxes, scores, kpts):
-        for box, score, kp in zip(boxes, scores, kpts):
-            x, y, w, h = box.astype(int)
-            # Draw rectangle
-            cv2.rectangle(image, (x, y), (x + w, y + h), (0, 0, 255), thickness=3)
-            cv2.putText(image, "face:"+str(round(score,2)), (x, y - 5), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), thickness=2)
-            for i in range(5):
-                cv2.circle(image, (int(kp[i * 3]), int(kp[i * 3 + 1])), 4, (0, 255, 0), thickness=-1)
-                # cv2.putText(image, str(i), (int(kp[i * 3]), int(kp[i * 3 + 1]) - 10), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 0, 0), thickness=1)
-        return image
-
-
-if __name__ == '__main__':
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--imgpath', type=str, default='images/2.jpg', help="image path")
-    parser.add_argument('--modelpath', type=str, default='weights/yolov8n-face.onnx',
-                        help="onnx filepath")
-    parser.add_argument('--confThreshold', default=0.45, type=float, help='class confidence')
-    parser.add_argument('--nmsThreshold', default=0.5, type=float, help='nms iou thresh')
+    # Detection command
+    detect_parser = subparsers.add_parser("detect", help="Face detection on image")
+    detect_parser.add_argument("--image", type=str, required=True, help="Input image path")
+    detect_parser.add_argument("--model", type=str, help="Model path (overrides config)")
+    detect_parser.add_argument("--conf", type=float, help="Confidence threshold (overrides config)")
+    detect_parser.add_argument("--output", type=str, help="Output image path")
+    detect_parser.add_argument("--show", action="store_true", help="Show result window")
+    
+    # Tracking command
+    track_parser = subparsers.add_parser("track", help="Face tracking on video")
+    track_parser.add_argument("--input", type=str, required=True, help="Input video path or camera index")
+    track_parser.add_argument("--output", type=str, help="Output video path")
+    track_parser.add_argument("--model", type=str, help="Model path (overrides config)")
+    track_parser.add_argument("--conf", type=float, help="Detection confidence (overrides config)")
+    track_parser.add_argument("--track-thresh", type=float, help="Tracking threshold (overrides config)")
+    track_parser.add_argument("--show", action="store_true", help="Show video window")
+    track_parser.add_argument("--save-faces", action="store_true", help="Save face crops")
+    
+    # Quality assessment command
+    quality_parser = subparsers.add_parser("quality", help="Face quality assessment")
+    quality_parser.add_argument("--input", type=str, required=True, help="Input image or folder path")
+    quality_parser.add_argument("--detection-model", type=str, help="Detection model (overrides config)")
+    quality_parser.add_argument("--quality-model", type=str, help="Quality model (overrides config)")
+    quality_parser.add_argument("--align", action="store_true", help="Use face alignment")
+    quality_parser.add_argument("--show", action="store_true", help="Show results")
+    quality_parser.add_argument("--top-k", type=int, default=10, help="Show top K results")
+    quality_parser.add_argument("--output", type=str, help="Output CSV file")
+    
+    # Alignment command
+    align_parser = subparsers.add_parser("align", help="Face alignment and cropping")
+    align_parser.add_argument("--input", type=str, required=True, help="Input image or folder path")
+    align_parser.add_argument("--output-dir", type=str, help="Output directory (overrides config)")
+    align_parser.add_argument("--model", type=str, help="Detection model (overrides config)")
+    align_parser.add_argument("--template-mode", type=str, choices=["arcface", "default"],
+                             help="Alignment template mode (overrides config)")
+    align_parser.add_argument("--output-size", type=int, help="Output face size (overrides config)")
+    align_parser.add_argument("--show", action="store_true", help="Show results")
+    align_parser.add_argument("--create-grid", action="store_true", help="Create alignment grid")
+    
     args = parser.parse_args()
+    
+    if not args.command:
+        parser.print_help()
+        return 1
+    
+    # Setup logging
+    logger = setup_logging(args.log_level)
+    
+    try:
+        # Load configuration
+        if args.config:
+            logger.info(f"Loading configuration from: {args.config}")
+            config = load_config_from_file(args.config)
+        else:
+            logger.info("Using default configuration")
+            config = get_default_config()
+        
+        # Validate paths
+        config.validate_paths()
+        
+        # Execute command
+        if args.command == "detect":
+            from examples.detect_image import main as detect_main
+            
+            # Build arguments for detect script
+            detect_args = [
+                "--image", args.image,
+                "--model", args.model or config.detection.model_path,
+                "--conf", str(args.conf or config.detection.conf_threshold),
+                "--iou", str(config.detection.iou_threshold)
+            ]
+            
+            if args.output:
+                detect_args.extend(["--output", args.output])
+            if args.show:
+                detect_args.append("--show")
+            
+            # Override sys.argv for the detect script
+            original_argv = sys.argv
+            sys.argv = ["detect_image.py"] + detect_args
+            
+            try:
+                return detect_main()
+            finally:
+                sys.argv = original_argv
+        
+        elif args.command == "track":
+            from examples.track_video import main as track_main
+            
+            # Build arguments for track script
+            track_args = [
+                "--input", args.input,
+                "--model", args.model or config.detection.model_path,
+                "--conf", str(args.conf or config.detection.conf_threshold),
+                "--track-thresh", str(args.track_thresh or config.tracking.track_threshold),
+                "--track-buffer", str(config.tracking.track_buffer),
+                "--match-thresh", str(config.tracking.match_threshold),
+                "--output-dir", config.output_dir
+            ]
+            
+            if args.output:
+                track_args.extend(["--output", args.output])
+            if args.show:
+                track_args.append("--show")
+            if args.save_faces:
+                track_args.append("--save-faces")
+            
+            # Override sys.argv for the track script
+            original_argv = sys.argv
+            sys.argv = ["track_video.py"] + track_args
+            
+            try:
+                return track_main()
+            finally:
+                sys.argv = original_argv
+        
+        elif args.command == "quality":
+            from examples.quality_assessment import main as quality_main
+            
+            # Build arguments for quality script
+            quality_args = [
+                "--input", args.input,
+                "--detection-model", args.detection_model or config.detection.model_path,
+                "--quality-model", args.quality_model or config.quality.model_path,
+                "--conf", str(config.detection.conf_threshold),
+                "--top-k", str(args.top_k)
+            ]
+            
+            if args.align:
+                quality_args.append("--align")
+            if args.show:
+                quality_args.append("--show")
+            if args.output:
+                quality_args.extend(["--output", args.output])
+            
+            # Override sys.argv for the quality script
+            original_argv = sys.argv
+            sys.argv = ["quality_assessment.py"] + quality_args
+            
+            try:
+                return quality_main()
+            finally:
+                sys.argv = original_argv
+        
+        elif args.command == "align":
+            from examples.align_faces import main as align_main
+            
+            # Build arguments for align script
+            align_args = [
+                "--input", args.input,
+                "--output-dir", args.output_dir or config.output_dir + "/aligned",
+                "--model", args.model or config.detection.model_path,
+                "--conf", str(config.detection.conf_threshold),
+                "--template-mode", args.template_mode or config.alignment.template_mode,
+                "--output-size", str(args.output_size or config.alignment.output_size)
+            ]
+            
+            if config.alignment.allow_upscale:
+                align_args.append("--allow-upscale")
+            if config.alignment.template_scale:
+                align_args.extend(["--template-scale", str(config.alignment.template_scale)])
+            if args.show:
+                align_args.append("--show")
+            if args.create_grid:
+                align_args.append("--create-grid")
+            
+            # Override sys.argv for the align script
+            original_argv = sys.argv
+            sys.argv = ["align_faces.py"] + align_args
+            
+            try:
+                return align_main()
+            finally:
+                sys.argv = original_argv
+        
+        else:
+            logger.error(f"Unknown command: {args.command}")
+            return 1
+    
+    except Exception as e:
+        logger.error(f"Error: {e}")
+        return 1
 
-    # Initialize YOLOv8_face object detector
-    YOLOv8_face_detector = YOLOv8_face(args.modelpath, conf_thres=args.confThreshold, iou_thres=args.nmsThreshold)
-    srcimg = cv2.imread(args.imgpath)
 
-    # Detect Objects
-    boxes, scores, classids, kpts = YOLOv8_face_detector.detect(srcimg)
-
-    # Draw detections
-    dstimg = YOLOv8_face_detector.draw_detections(srcimg, boxes, scores, kpts)
-    #cv2.imwrite('result.jpg', dstimg)
-    winName = 'Deep learning face detection use OpenCV'
-    cv2.namedWindow(winName, 0)
-    cv2.imshow(winName, dstimg)
-    cv2.waitKey(0)
-    cv2.destroyAllWindows()
+if __name__ == "__main__":
+    sys.exit(main())

@@ -1,0 +1,1 @@
+"""Examples for YOLOv8 Face Detection and Tracking."""

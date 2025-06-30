@@ -1,0 +1,1 @@
+"""Tests for YOLOv8 Face Detection and Tracking."""

@@ -48,9 +48,9 @@ class BaseTrack:
 
     @staticmethod
     def next_id():
+        id = BaseTrack._count
         BaseTrack._count += 1
-        return BaseTrack._count
-
+        return id
     def mark_lost(self):
         self.state = TrackState.Lost
 
@@ -427,11 +427,13 @@ class BYTETracker:
         if len(dets_low) > 0:
             detections_low = self.init_track(dets_low, scores_low, classes_low)
             r_tracked_stracks = [strack_pool[i] for i in u_track if strack_pool[i].state == TrackState.Tracked]
-            
             dists = iou_distance(r_tracked_stracks, detections_low)
             matches, u_track, u_detection_second = linear_assignment(dists, thresh=0.5)
-            
             for itracked, idet in matches:
+                itracked = int(itracked)
+                idet = int(idet)
+                if itracked >= len(r_tracked_stracks) or idet >= len(detections_low):
+                    continue  # skip invalid matches
                 track = r_tracked_stracks[itracked]
                 det = detections_low[idet]
                 if track.state == TrackState.Tracked:
@@ -461,6 +463,8 @@ class BYTETracker:
             removed_stracks.append(track)
 
         for inew in u_detection:
+            if inew < 0 or inew >= len(detections_remain):
+                continue  # skip invalid indices
             track = detections_remain[inew]
             if track.score < self.track_thresh:
                 continue
@@ -528,7 +532,7 @@ class BYTETracker:
 
     @staticmethod
     def remove_duplicate_stracks(stracksa, stracksb):
-        pdist = iou_distance(stracksa, stracksb)
+        pdist = iou_distance(stracksa, stracksb).reshape(len(stracksa), len(stracksb))
         pairs = np.where(pdist < 0.15)
         dupa, dupb = [], []
         for p, q in zip(*pairs):

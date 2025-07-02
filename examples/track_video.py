@@ -7,6 +7,7 @@ import argparse
 import cv2
 import sys
 from pathlib import Path
+import numpy as np
 
 # Add src to path
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
@@ -19,14 +20,15 @@ def main():
     parser = argparse.ArgumentParser(description="Face tracking on video")
     parser.add_argument("--input", type=str, default="/home/ubuntu/Projects/sample_videos/metro_genclik_h265_45sec.mp4", help="Input video path or camera index")
     parser.add_argument("--model", type=str, default="weights/yolov8n-face.onnx", help="Model path")
-    parser.add_argument("--output", type=str, default="/home/ubuntu/Projects/yolov8-face-landmarks-opencv-dnn/data/output/video.mp4",help="Output video path")
+    parser.add_argument("--output", type=str, default="/home/ubuntu/Projects/yolov8-face-landmarks-opencv-dnn/data/videos/tracker_video.mp4",help="Output video path")
     parser.add_argument("--conf", type=float, default=0.2, help="Detection confidence threshold")
     parser.add_argument("--track-thresh", type=float, default=0.5, help="Tracking confidence threshold")
     parser.add_argument("--track-buffer", type=int, default=30, help="Track buffer frames")
     parser.add_argument("--match-thresh", type=float, default=0.8, help="Track matching threshold")
     parser.add_argument("--show", action="store_true", help="Show video window")
-    parser.add_argument("--save-faces", action="store_true", help="Save face crops")
-    parser.add_argument("--output-dir", type=str, default="output", help="Output directory")
+    parser.add_argument("--save-faces", action="store_false", help="Save face crops")
+    parser.add_argument("--output-dir", type=str, default="/home/ubuntu/Projects/yolov8-face-landmarks-opencv-dnn/data", help="Output directory")
+    parser.add_argument("--align", action="store_false", help="Align face crops")
     args = parser.parse_args()
 
     # Setup logging
@@ -91,7 +93,7 @@ def main():
             frame_count += 1
             
             # Track faces
-            tracked_faces, landmarks = tracker.detect_and_track(frame)
+            tracked_faces = tracker.detect_and_track(frame)
             
             # Draw tracking results
             result_frame = tracker.draw_tracks(frame, tracked_faces)
@@ -106,7 +108,15 @@ def main():
                 from utils import save_face_crops
                 bboxes = tracked_faces[:, :4]  # Extract bounding boxes
                 track_ids = tracked_faces[:, 4].astype(int)  # Extract track IDs
-                save_face_crops(frame, bboxes, track_ids, output_dirs['faces'], frame_count)
+                landmarks = tracked_faces[:, 8:] if tracked_faces.shape[1] > 8 else None
+                if args.align:
+                    # Import aligner only if needed
+                    from alignment import FaceAligner
+                    aligner = getattr(main, '_aligner', None)
+                    if aligner is None:
+                        aligner = FaceAligner()
+                        main._aligner = aligner
+                save_face_crops(frame, bboxes, track_ids, output_dirs['faces'], frame_count, aligner=aligner if args.align else None, landmarks=landmarks if args.align else None)
             
             # Write to output video
             if video_writer:

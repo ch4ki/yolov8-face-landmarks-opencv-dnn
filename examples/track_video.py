@@ -12,8 +12,12 @@ import numpy as np
 # Add src to path
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
+
 from tracking import FaceTracker
 from utils import setup_logging, FPSCounter, VideoWriter, create_output_dirs
+from face_crop_saver import FaceCropSaver
+from alignment import FaceAligner
+from quality import FaceQualityAssessment
 
 
 def main():
@@ -34,12 +38,11 @@ def main():
     # Setup logging
     logger = setup_logging()
     
-    # try:
     # Create output directories
     if args.save_faces or args.output:
         output_dirs = create_output_dirs(args.output_dir)
         logger.info(f"Output directories created: {output_dirs}")
-    
+
     # Initialize tracker
     logger.info(f"Loading model: {args.model}")
     tracker = FaceTracker(
@@ -49,7 +52,20 @@ def main():
         track_buffer=args.track_buffer,
         match_thresh=args.match_thresh
     )
-    
+
+    # Initialize aligner and quality model (if needed)
+    aligner = FaceAligner() if args.align else None
+    quality_model = FaceQualityAssessment('weights/face-quality-assessment.onnx')
+
+    # Initialize face crop saver
+    face_crop_saver = FaceCropSaver(
+        output_dir=output_dirs['faces'],
+        aligner=aligner,
+        quality_model=quality_model,
+        align=args.align,
+        calc_quality=True  # Set True to enable quality
+    )
+
     # Open video source
     try:
         # Try as camera index first
@@ -59,28 +75,28 @@ def main():
         # Use as file path
         video_source = args.input
         logger.info(f"Opening video file: {video_source}")
-    
+
     cap = cv2.VideoCapture(video_source)
     if not cap.isOpened():
         raise ValueError(f"Could not open video source: {args.input}")
-    
+
     # Get video properties
     fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
     width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    
+
     logger.info(f"Video properties: {width}x{height}, {fps:.1f} FPS, {total_frames} frames")
-    
+
     # Initialize video writer if output specified
     video_writer = None
     if args.output:
         video_writer = VideoWriter(args.output, fps, (width, height))
         logger.info(f"Output video: {args.output}")
-    
+
     # Initialize FPS counter
     fps_counter = FPSCounter()
-    
+
     frame_count = 0
     logger.info("Starting face tracking...")
     
@@ -105,18 +121,10 @@ def main():
             
             # Save face crops if requested
             if args.save_faces and len(tracked_faces) > 0:
-                from utils import save_face_crops
                 bboxes = tracked_faces[:, :4]  # Extract bounding boxes
                 track_ids = tracked_faces[:, 4].astype(int)  # Extract track IDs
                 landmarks = tracked_faces[:, 8:] if tracked_faces.shape[1] > 8 else None
-                if args.align:
-                    # Import aligner only if needed
-                    from alignment import FaceAligner
-                    aligner = getattr(main, '_aligner', None)
-                    if aligner is None:
-                        aligner = FaceAligner()
-                        main._aligner = aligner
-                save_face_crops(frame, bboxes, track_ids, output_dirs['faces'], frame_count, aligner=aligner if args.align else None, landmarks=landmarks if args.align else None)
+                face_crop_saver.save(frame, bboxes, track_ids, frame_count, landmarks=landmarks)
             
             # Write to output video
             if video_writer:

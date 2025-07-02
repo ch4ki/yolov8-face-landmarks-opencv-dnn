@@ -8,7 +8,6 @@ from pathlib import Path
 from typing import List, Tuple, Optional, Union
 import logging
 
-
 def setup_logging(log_level: str = "INFO", log_file: Optional[str] = None) -> logging.Logger:
     """
     Setup logging configuration.
@@ -71,7 +70,7 @@ def create_output_dirs(base_dir: str) -> dict:
 
 
 def save_face_crops(image: np.ndarray, bboxes: np.ndarray, track_ids: List[int], 
-                   output_dir: str, frame_id: int) -> List[str]:
+                   output_dir: str, frame_id: int, aligner=None, landmarks=None) -> List[str]:
     """
     Save cropped face images.
     
@@ -87,27 +86,53 @@ def save_face_crops(image: np.ndarray, bboxes: np.ndarray, track_ids: List[int],
     """
     saved_paths = []
     output_path = Path(output_dir)
-    
-    for i, (bbox, track_id) in enumerate(zip(bboxes, track_ids)):
-        x1, y1, x2, y2 = bbox.astype(int)
-        
-        # Ensure valid coordinates
-        x1, y1 = max(0, x1), max(0, y1)
-        x2, y2 = min(image.shape[1], x2), min(image.shape[0], y2)
-        
-        if x2 > x1 and y2 > y1:
-            face_crop = image[y1:y2, x1:x2]
-            
-            # Create track-specific directory
-            track_dir = output_path / f"track_{track_id}"
-            track_dir.mkdir(exist_ok=True)
-            
-            # Save face crop
-            filename = f"frame_{frame_id:06d}_face_{i}.jpg"
-            file_path = track_dir / filename
-            cv2.imwrite(str(file_path), face_crop)
-            saved_paths.append(str(file_path))
-    
+    # If landmarks are provided, zip all three; else, zip bboxes and track_ids only
+    if aligner is not None and landmarks is not None:
+        if len(landmarks) != len(bboxes):
+            logging.warning("Number of landmarks does not match number of bboxes. Skipping alignment.")
+            landmarks = None  # fallback to no alignment
+        else:
+            zipped = zip(bboxes, track_ids, landmarks)
+    if aligner is not None and landmarks is not None:
+        for i, (bbox, track_id, landmark) in enumerate(zipped):
+            x1, y1, x2, y2 = bbox.astype(int)
+            x1, y1 = max(0, x1), max(0, y1)
+            x2, y2 = min(image.shape[1], x2), min(image.shape[0], y2)
+            if x2 > x1 and y2 > y1:
+                w = x2 - x1
+                h = y2 - y1
+                ratio = w / h if h > 0 else 0
+                if w >= 90 and h >= 90 and 0.8 <= ratio <= 1.25:
+                    face_crop = image[y1:y2, x1:x2]
+                    track_dir = output_path / f"track_{track_id}"
+                    track_dir.mkdir(exist_ok=True)
+                    try:
+                        aligned_face, _, _ = aligner.align_face(image, bbox, landmark, allow_upscale=True)
+                        face_crop = aligned_face
+                    except Exception as e:
+                        logging.warning(f"Alignment failed for track {track_id}: {e}")
+                        continue
+                    filename = f"frame_{frame_id:06d}_face_{i}.jpg"
+                    file_path = track_dir / filename
+                    cv2.imwrite(str(file_path), face_crop)
+                    saved_paths.append(str(file_path))
+    else:
+        for i, (bbox, track_id) in enumerate(zip(bboxes, track_ids)):
+            x1, y1, x2, y2 = bbox.astype(int)
+            x1, y1 = max(0, x1), max(0, y1)
+            x2, y2 = min(image.shape[1], x2), min(image.shape[0], y2)
+            if x2 > x1 and y2 > y1:
+                w = x2 - x1
+                h = y2 - y1
+                ratio = w / h if h > 0 else 0
+                if w >= 90 and h >= 90 and 0.8 <= ratio <= 1.25:
+                    face_crop = image[y1:y2, x1:x2]
+                    track_dir = output_path / f"track_{track_id}"
+                    track_dir.mkdir(exist_ok=True)
+                    filename = f"frame_{frame_id:06d}_face_{i}.jpg"
+                    file_path = track_dir / filename
+                    cv2.imwrite(str(file_path), face_crop)
+                    saved_paths.append(str(file_path))
     return saved_paths
 
 

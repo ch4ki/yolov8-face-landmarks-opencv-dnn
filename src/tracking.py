@@ -244,7 +244,7 @@ class STrack(BaseTrack):
     
     shared_kalman = KalmanFilterXYAH()
 
-    def __init__(self, xywh, score, cls):
+    def __init__(self, xywh, score, cls, landmarks=None):
         super().__init__()
         if len(xywh) == 4:
             x, y, w, h = xywh
@@ -259,6 +259,7 @@ class STrack(BaseTrack):
         self.tracklet_len = 0
         self.cls = cls
         self.idx = 0
+        self.landmarks = landmarks
 
     def predict(self):
         mean_state = self.mean.copy()
@@ -304,6 +305,7 @@ class STrack(BaseTrack):
         self.score = new_track.score
         self.cls = new_track.cls
         self.idx = new_track.idx
+        self.landmarks = new_track.landmarks
 
     def update(self, new_track, frame_id):
         self.frame_id = frame_id
@@ -317,6 +319,7 @@ class STrack(BaseTrack):
         self.score = new_track.score
         self.cls = new_track.cls
         self.idx = new_track.idx
+        self.landmarks = new_track.landmarks
 
     def convert_coords(self, tlwh):
         return self.tlwh_to_xyah(tlwh)
@@ -352,7 +355,10 @@ class STrack(BaseTrack):
     @property
     def result(self):
         coords = self.xyxy
-        return coords.tolist() + [self.track_id, self.score, self.cls, self.idx]
+        result = coords.tolist() + [self.track_id, self.score, self.cls, self.idx]
+        if self.landmarks is not None:
+            result.extend(self.landmarks.reshape(-1, 3)[:, :2].flatten().tolist())
+        return result
 
 
 class BYTETracker:
@@ -393,12 +399,14 @@ class BYTETracker:
         dets_high = boxes[high_conf_mask]
         scores_high = scores[high_conf_mask]
         classes_high = classes[high_conf_mask] if len(classes) > 0 else np.zeros(len(dets_high))
+        landmarks_high = landmarks[high_conf_mask] if landmarks is not None else np.zeros((len(dets_high), 5, 2)) 
         
         dets_low = boxes[low_conf_mask]
         scores_low = scores[low_conf_mask]
         classes_low = classes[low_conf_mask] if len(classes) > 0 else np.zeros(len(dets_low))
+        landmarks_low = landmarks[low_conf_mask] if landmarks is not None else np.zeros((len(dets_low), 5, 2))
 
-        detections_high = self.init_track(dets_high, scores_high, classes_high)
+        detections_high = self.init_track(dets_high, scores_high, classes_high, landmarks_high)
         
         unconfirmed = []
         tracked_stracks = []
@@ -425,7 +433,7 @@ class BYTETracker:
                 refind_stracks.append(track)
 
         if len(dets_low) > 0:
-            detections_low = self.init_track(dets_low, scores_low, classes_low)
+            detections_low = self.init_track(dets_low, scores_low, classes_low, landmarks_low)
             r_tracked_stracks = [strack_pool[i] for i in u_track if strack_pool[i].state == TrackState.Tracked]
             dists = iou_distance(r_tracked_stracks, detections_low)
             matches, u_track, u_detection_second = linear_assignment(dists, thresh=0.5)
@@ -454,6 +462,8 @@ class BYTETracker:
         matches, u_unconfirmed, u_detection = linear_assignment(dists, thresh=0.7)
         
         for itracked, idet in matches:
+            if idet >= len(detections_remain):
+                continue  # skip invalid indices
             unconfirmed[itracked].update(detections_remain[idet], self.frame_id)
             activated_stracks.append(unconfirmed[itracked])
             
@@ -490,8 +500,10 @@ class BYTETracker:
 
         return np.asarray([x.result for x in self.tracked_stracks if x.is_activated], dtype=np.float32)
 
-    def init_track(self, dets, scores, cls):
-        return [STrack(xyxy, s, c) for (xyxy, s, c) in zip(dets, scores, cls)] if len(dets) else []
+    def init_track(self, dets, scores, cls, landmarks):
+        if len(dets) == 0:
+            return []
+        return [STrack(xyxy, s, c, l) for (xyxy, s, c, l) in zip(dets, scores, cls, landmarks)]
 
     def get_dists(self, tracks, detections):
         return iou_distance(tracks, detections)
@@ -591,7 +603,7 @@ class FaceTracker:
         """
         boxes, scores, classes, landmarks = self.detector.detect(frame)
         tracked_faces = self.tracker.update((boxes, scores, classes, landmarks))
-        return tracked_faces, landmarks
+        return tracked_faces
     
     def draw_tracks(self, frame: np.ndarray, tracked_faces: np.ndarray, 
                    landmarks: Optional[np.ndarray] = None, draw_history: bool = True) -> np.ndarray:
@@ -601,7 +613,7 @@ class FaceTracker:
         Args:
             frame: Input frame
             tracked_faces: Tracked face results
-            landmarks: Optional landmarks
+            landmarks: Optional landmarks (deprecated, landmarks are now included in tracked_faces)
             draw_history: Whether to draw track history
             
         Returns:
@@ -623,6 +635,11 @@ class FaceTracker:
             label = f"ID:{track_id} {score:.2f}"
             cv2.putText(result_frame, label, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
             
+            # Draw landmarks if available (after track_id, score, cls, idx)
+            if len(track) > 8:  # Has landmarks
+                landmarks = track[8:].reshape(-1, 2)
+                for lx, ly in landmarks.astype(np.int32):
+                    cv2.circle(result_frame, (lx, ly), 2, (0, 255, 255), -1)
             # Update and draw track history
             if draw_history:
                 center = ((x1 + x2) // 2, (y1 + y2) // 2)

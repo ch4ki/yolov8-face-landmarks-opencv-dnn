@@ -47,10 +47,10 @@ def align_faces_in_image(image_path: str, detector: YOLOv8Face, aligner: FaceAli
         try:
             # Convert bbox to xyxy format
             bbox_xyxy = [x, y, x+w, y+h]
-            
+            landmark_xy = landmark.reshape(-1,2)
             # Align face
             aligned_face, aligned_bbox, aligned_landmarks = aligner.align_face(
-                image, bbox_xyxy, landmark,
+                image, bbox_xyxy, landmark_xy,
                 template_mode=template_mode,
                 image_size=output_size
             )
@@ -175,7 +175,7 @@ def create_alignment_grid(aligned_faces: list, output_path: str, grid_size: tupl
 
 def main():
     parser = argparse.ArgumentParser(description="Face alignment and cropping")
-    parser.add_argument("--input", type=str, required=True, help="Input image or folder path")
+    parser.add_argument("--input", type=str, default="images/1.jpg", help="Input image or folder path")
     parser.add_argument("--output-dir", type=str, default="output/aligned", help="Output directory")
     parser.add_argument("--model", type=str, default="weights/yolov8n-face.onnx", help="Detection model path")
     parser.add_argument("--conf", type=float, default=0.45, help="Detection confidence threshold")

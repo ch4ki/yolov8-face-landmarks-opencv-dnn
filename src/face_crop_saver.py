@@ -26,9 +26,12 @@ class FaceCropSaver:
         quality_scores = []
         def make_filename(frame_id, i, score=None):
             if score is not None:
-                return f"frame_{frame_id:06d}_face_{i}_q{score:.3f}.jpg"
+                return f"{score:.3f}q_frame_{frame_id:06d}_face_{i}.jpg"
             else:
                 return f"frame_{frame_id:06d}_face_{i}.jpg"
+
+        def resize_112(face_img):
+            return cv2.resize(face_img, (112, 112))
 
         if self.align and self.aligner is not None and landmarks is not None:
             if len(landmarks) != len(bboxes):
@@ -55,6 +58,7 @@ class FaceCropSaver:
                         except Exception as e:
                             logging.warning(f"Alignment failed for track {track_id}: {e}")
                             continue
+                        face_crop = resize_112(face_crop)
                         score = None
                         if self.calc_quality and self.quality_model is not None:
                             score = self.quality_model.get_quality_score(face_crop)
@@ -76,6 +80,7 @@ class FaceCropSaver:
                     ratio = w / h if h > 0 else 0
                     if w >= 90 and h >= 90 and 0.8 <= ratio <= 1.25:
                         face_crop = image[y1:y2, x1:x2]
+                        face_crop = resize_112(face_crop)
                         track_dir = self.output_dir / f"track_{track_id}"
                         track_dir.mkdir(exist_ok=True)
                         score = None

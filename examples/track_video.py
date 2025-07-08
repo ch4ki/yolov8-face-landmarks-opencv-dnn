@@ -17,7 +17,7 @@ from tracking import FaceTracker
 from utils import setup_logging, FPSCounter, VideoWriter, create_output_dirs
 from face_crop_saver import FaceCropSaver
 from alignment import FaceAligner
-from quality import FaceQualityAssessment
+from quality import FaceQualityAssessment, FaceQualityLightQnet
 
 
 def main():
@@ -55,8 +55,8 @@ def main():
 
     # Initialize aligner and quality model (if needed)
     aligner = FaceAligner() if args.align else None
-    quality_model = FaceQualityAssessment('weights/face-quality-assessment.onnx')
-
+    # quality_model = FaceQualityAssessment('weights/face-quality-assessment.onnx')
+    quality_model = FaceQualityLightQnet('/home/ubuntu/Projects/yolov8-face-landmarks-opencv-dnn/onnx/lightqnet-dm100.onnx')
     # Initialize face crop saver
     face_crop_saver = FaceCropSaver(
         output_dir=output_dirs['faces'],
